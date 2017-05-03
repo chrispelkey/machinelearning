@@ -1,0 +1,544 @@
+##Get ready to model in H2O
+library(h2o)
+##Start up a 1-node H2O server on your local machine, and allow it to use all CPU cores and up to 2GB of memory:
+h2o.init(nthreads=-1, max_mem_size="2G")
+h2o.removeAll() ## clean slate - just in case the cluster was already running
+
+## Import data
+## This is the data that has imputed values for numerics and standardized numerics - suitable for treebased solutions
+train.t <- h2o.importFile(path = normalizePath("H:/Northwestern/498/H2O/train.csv"))
+test.t <- h2o.importFile(path = normalizePath("H:/Northwestern/498/H2O/test.csv"))
+train.t[1:5,]
+
+## Make sure that factors that could be misconstrued as numerics are appropriately assigned as factors
+train.t[,2:6] <- as.factor(train.t[,2:6])
+train.t[,27:28] <- as.factor(train.t[,27:28])
+test.t[,2:6] <- as.factor(test.t[,2:6])
+test.t[,27:28] <- as.factor(test.t[,27:28])
+
+## This is the data that has imputed values for numerics and standardized numerics and dummy coded categorical variables - suitable for GLM, Neural Network, etc
+train.d <- h2o.importFile(path = normalizePath("H:/Northwestern/498/H2O/train.d.csv"))
+test.d <- h2o.importFile(path = normalizePath("H:/Northwestern/498/H2O/test.d.csv"))
+train.d[1:5,]
+dim(train.d)
+
+#set dv as numeric for easier processing of multiclass ROC
+level<-c("1","2","3")
+h2o.setLevels(train.t$status_group, level)
+h2o.setLevels(test.t$status_group, level)
+h2o.setLevels(train.d$status_group, level)
+h2o.setLevels(test.d$status_group, level)
+dv<-h2o.asnumeric(test.t$status_group)
+dv2<-h2o.asnumeric(train.t$status_group)
+id<-h2o.asnumeric(test.t$id)
+id2<-h2o.asnumeric(train.t$id)
+##RANDOM FOREST -- FIRST ATTEMPT - 27 predictors
+#https://github.com/h2oai/h2o-tutorials/blob/master/tutorials/gbm-randomforest/GBM_RandomForest_Example.R
+randomforest1 <- h2o.randomForest(
+  training_frame = train.t,
+  validation_frame = test.t,
+  x=2:28,
+  y=29,
+  model_id = "randomforest1",
+  ntrees = 200,
+  mtries = 5,
+  max_depth = 30,
+  stopping_rounds = 2,
+  stopping_tolerance = 1e-2,
+  score_each_iteration =T,
+  seed = 10000000)
+
+pred<-h2o.predict(
+  object=randomforest1
+  ,newdata=test.t)
+
+summary(randomforest1)
+h2o.hit_ratio_table(randomforest1,valid=T)[1,2]
+h2o.hit_ratio_table(randomforest1,valid=F)[1,2]
+
+##Export results to use in multiclass.roc
+rf1out<-as.data.frame(h2o.cbind(dv,pred$predict))
+write.csv(rf1out, file="rf1out.csv")
+
+##Result is 0.8055446 on the test data - try removing less important predictors (all of the missing indicators)
+
+##RANDOM FOREST -- SECOND ATTEMPT
+
+randomforest2 <- h2o.randomForest(
+  training_frame = train.t,
+  validation_frame = test.t,
+  x=7:28,
+  y=29,
+  model_id = "randomforest2",
+  mtries = 4,
+  ntrees = 200,
+  max_depth = 30,
+  stopping_rounds = 2,
+  stopping_tolerance = 1e-2,
+  score_each_iteration =T,
+  seed = 10000000)
+
+pred<-h2o.predict(
+  object=randomforest2
+  ,newdata=test.t)
+
+summary(randomforest2)
+h2o.hit_ratio_table(randomforest2,valid=T)[1,2]
+h2o.hit_ratio_table(randomforest2,valid=F)[1,2]
+
+##Export results to use in multiclass.roc
+rf2out<-as.data.frame(h2o.cbind(dv,pred$predict))
+write.csv(rf2out, file="rf2out.csv")
+
+##Result is 0.805713 on the test data - this is better - what if we remove another predictor?
+
+##RANDOM FOREST -- THIRD ATTEMPT - down to 19 predictors
+#Drop the variables we won't use
+xvars<-names(train.t)%in% c("gps_height.m","longitude.m", "latitude.m","population.m","construction_year.m", "permit","public_meeting","lga_1.5pct")
+train.t.r<-train.t[!xvars]
+xvars<-names(test.t)%in% c("gps_height.m","longitude.m", "latitude.m","population.m","construction_year.m", "permit","public_meeting","lga_1.5pct")
+test.t.r<-test.t[!xvars]
+train.t.r[1:5,]
+dim(train.t.r)
+
+randomforest3 <- h2o.randomForest(
+  training_frame = train.t.r,
+  validation_frame = test.t.r,
+  x=2:20,
+  y=21,
+  model_id = "randomforest3",
+  ntrees = 200,
+  mtries = 4,
+  max_depth = 40,
+  #stopping_rounds = 2,
+  #stopping_tolerance = 1e-2,
+  #score_each_iteration =T,
+  seed = 10000000)
+
+pred<-h2o.predict(
+  object=randomforest3
+  ,newdata=test.t.r)
+pred2<-h2o.predict(
+  object=randomforest3
+  ,newdata=train.t.r)
+
+summary(randomforest3)
+h2o.hit_ratio_table(randomforest3,valid=T)[1,2]
+h2o.hit_ratio_table(randomforest3,valid=F)[1,2]
+
+##Export results to use in multiclass.roc
+rf3out<-as.data.frame(h2o.cbind(id,dv,pred$predict))
+write.csv(rf3out, file="rf3out.csv")
+rf3out2<-as.data.frame(h2o.cbind(id2,dv2,pred2$predict))
+write.csv(rf3out2, file="rf3out2.csv")
+
+##Result is improved again - 0.8079578 - Keep this version
+
+##GRADIENT BOOSTING - FIRST ATTEMPT - All data and a few tuning parameters
+gradientboosting1 <- h2o.gbm(
+  training_frame = train.t,
+  validation_frame = test.t,
+  x=2:28,
+  y=29,
+  ntrees = 100,            #increase the number of trees, default is 50
+  learn_rate = 0.3,        #increase the learning rate, default is 0.1
+  max_depth = 10,          #increase the depth, default is 5
+  stopping_rounds = 2,
+  stopping_tolerance = 0.01,
+  score_each_iteration = T,
+  model_id = "gradientboosting1",
+  seed = 10000000)
+
+pred<-h2o.predict(
+  object=gradientboosting1
+  ,newdata=test.t.r)
+
+##Export results to use in multiclass.roc
+gb1out<-as.data.frame(h2o.cbind(dv,pred$predict))
+write.csv(gb1out, file="gb1out.csv")
+
+summary(gradientboosting1)
+h2o.hit_ratio_table(gradientboosting1,valid=T)[1,2]
+h2o.hit_ratio_table(gradientboosting1,valid=F)[1,2]
+
+
+
+##Result is  0.797295 - what if we add a stochastic element and limit predictors?
+
+##GRADIENT BOOSTING - SECOND ATTEMPT - add stochastic element, but remove poor predictors
+gradientboosting2 <- h2o.gbm(
+  training_frame = train.t,
+  validation_frame = test.t,
+  x=7:28,
+  y=29,
+  ntrees = 100,            #increase the number of trees, default is 50
+  learn_rate = 0.3,        #increase the learning rate, default is 0.1
+  max_depth = 10,          #increase the depth, default is 5
+  sample_rate = 0.7,       #use a random 70% of the rows to fit each tree
+  col_sample_rate = 0.7,   # use 70% of the columns to fit each tree
+  stopping_rounds = 2,
+  stopping_tolerance = 0.01,
+  score_each_iteration = T,
+  model_id = "gradientboosting2",
+  seed = 10000000)
+
+pred<-h2o.predict(
+  object=gradientboosting2
+  ,newdata=test.t.r)
+
+##Export results to use in multiclass.roc
+gb2out<-as.data.frame(h2o.cbind(dv,pred$predict))
+write.csv(gb2out, file="gb2out.csv")
+
+
+summary(gradientboosting2)
+h2o.hit_ratio_table(gradientboosting2,valid=T)[1,2]
+h2o.hit_ratio_table(gradientboosting2,valid=F)[1,2]
+
+##Result is a small increase in accuracy 0.7973511
+test.t.r[1:5,]
+##GRADIENT BOOSTING - THIRD ATTEMPT - remove more predictors and stochastic element
+gradientboosting3 <- h2o.gbm(
+  training_frame = train.t.r,
+  validation_frame = test.t.r,
+  x=2:20,
+  y=21,
+  ntrees = 100,            #increase the number of trees, default is 50
+  learn_rate = 0.3,        #increase the learning rate, default is 0.1
+  max_depth = 20,          #increase the depth, default is 5
+  #sample_rate = 0.7,       #use a random 70% of the rows to fit each tree
+  #col_sample_rate = 0.7,   #use 70% of the columns to fit each tree
+  stopping_rounds = 2,
+  stopping_tolerance = 0.01,
+  score_each_iteration = T,
+  model_id = "gradientboosting3",
+  seed = 10000000)
+
+summary(gradientboosting3)
+h2o.hit_ratio_table(gradientboosting3,valid=T)[1,2]
+h2o.hit_ratio_table(gradientboosting3,valid=F)[1,2]
+
+pred<-h2o.predict(
+  object=gradientboosting3
+  ,newdata=test.t.r)
+
+
+##Export results to use in multiclass.roc
+gb3out<-as.data.frame(h2o.cbind(dv,pred$predict))
+write.csv(gb3out, file="gb3out.csv")
+
+
+##Result is a small increase in accuracy 0.8012795 - this is pretty good - let this be the final model
+
+##GLM -- FIRST ATTEMPT - all data - just default settings
+multinomial1 <- h2o.glm(
+  training_frame = train.d,
+  validation_frame = test.d,
+  x=2:180,
+  y=181,
+  model_id = "multinomial1",
+  family='multinomial',
+  solver='L_BFGS')
+
+summary(multinomial1)
+h2o.hit_ratio_table(multinomial1,valid=T)[1,2]
+h2o.hit_ratio_table(multinomial1,valid=F)[1,2]
+
+pred<-h2o.predict(
+  object=multinomial1
+  ,newdata=test.d)
+
+##Export results to use in multiclass.roc
+mn1out<-as.data.frame(h2o.cbind(dv,pred$predict))
+write.csv(mn1out, file="mn1out.csv")
+
+#This is not a great score - 0.7477973
+
+##GLM -- SECOND ATTEMPT - all data - tune parameters
+multinomial2 <- h2o.glm(
+  training_frame = train.d,
+  validation_frame = test.d,
+  x=2:180,
+  y=181,
+  model_id = "multinomial2",
+  family='multinomial',
+  solver='L_BFGS',
+  lambda = 0)
+
+summary(multinomial2)
+h2o.hit_ratio_table(multinomial2,valid=T)[1,2]
+h2o.hit_ratio_table(multinomial2,valid=F)[1,2] #0.7490922 - looks like this is about the same as the test data
+
+pred<-h2o.predict(
+  object=multinomial2
+  ,newdata=test.d)
+
+##Export results to use in multiclass.roc
+mn2out<-as.data.frame(h2o.cbind(dv,pred$predict))
+write.csv(mn2out, file="mn2out.csv")
+
+#This is a little worse,  0.7475167
+
+##GLM -- THIRD ATTEMPT - get rid of a few predictors
+multinomial3 <- h2o.glm(
+  training_frame = train.d,
+  validation_frame = test.d,
+  x=7:180,
+  y=181,
+  model_id = "multinomial3",
+  family='multinomial',
+  solver='L_BFGS',
+  lambda = 0)
+
+summary(multinomial3)
+h2o.hit_ratio_table(multinomial3,valid=T)[1,2]
+h2o.hit_ratio_table(multinomial3,valid=F)[1,2] #0.0.7501022 - looks like this is about the same as the test data
+
+pred<-h2o.predict(
+  object=multinomial3
+  ,newdata=test.d)
+
+##Export results to use in multiclass.roc
+mn3out<-as.data.frame(h2o.cbind(dv,pred$predict))
+write.csv(mn3out, file="mn3out.csv")
+
+#This is slightly better - 0.7477412 - FINAL - move onto other model types
+
+##DEEP LEARNING NEURAL NETWORK - FIRST ATTEMPT
+#http://htmlpreview.github.io/?https://github.com/ledell/sldm4-h2o/blob/master/sldm4-deeplearning-h2o.html
+#Start with defaults
+deeplearning1 <- h2o.deeplearning(
+  training_frame = train.d,
+  validation_frame = test.d,
+  x=2:180,
+  y=181,
+  model_id = "deeplearning1",
+  hidden = c(20,20),
+  seed = 10000000)
+
+pred<-h2o.predict(
+  object=deeplearning1
+  ,newdata=test.d)
+
+##Export results to use in multiclass.roc
+dl1out<-as.data.frame(h2o.cbind(dv,pred$predict))
+write.csv(dl1out, file="dl1out.csv")
+
+
+summary(deeplearning1)
+h2o.hit_ratio_table(deeplearning1,valid=T)[1,2]
+h2o.hit_ratio_table(deeplearning1,valid=F)[1,2]
+##Result is not great - 0.7598631
+
+##DEEP LEARNING NEURAL NETWORK - SECOND ATTEMPT - drop poor predictors,tune parameters
+deeplearning2 <- h2o.deeplearning(
+  training_frame = train.d,
+  validation_frame = test.d,
+  x=7:180,
+  y=181,
+  model_id = "deeplearning2",
+  epochs = 30,
+  hidden = c(20,20),
+  nfolds = 3,
+  score_interval = 1,
+  stopping_rounds = 5,
+  stopping_metric = "misclassification",
+  stopping_tolerance = 1e-3,
+  seed = 10000000)
+
+pred<-h2o.predict(
+  object=deeplearning2
+  ,newdata=test.d)
+
+##Export results to use in multiclass.roc
+dl2out<-as.data.frame(h2o.cbind(dv,pred$predict))
+write.csv(dl2out, file="dl2out.csv")
+
+summary(deeplearning2)
+h2o.hit_ratio_table(deeplearning2,valid=T)[1,2]
+h2o.hit_ratio_table(deeplearning2,valid=F)[1,2]
+
+# Result is still not great 0.7681127
+
+##DEEP LEARNING NEURAL NETWORK - THIRD ATTEMPT - drop another poor predictor,tune parameters
+deeplearning3 <- h2o.deeplearning(
+  training_frame = train.d,
+  validation_frame = test.d,
+  x=7:180,
+  y=181,
+  model_id = "deeplearning3",
+  epochs = 10,
+  hidden = c(30,30),
+  nfolds = 3,
+  score_interval = 1,
+  stopping_rounds = 5,
+  stopping_metric = "misclassification",
+  stopping_tolerance = 1e-3,
+  seed = 10000000)
+
+pred<-h2o.predict(
+  object=deeplearning3
+  ,newdata=test.d)
+
+##Export results to use in multiclass.roc
+dl3out<-as.data.frame(h2o.cbind(dv,pred$predict))
+write.csv(dl3out, file="dl3out.csv")
+
+summary(deeplearning3)
+h2o.hit_ratio_table(deeplearning3,valid=T)[1,2]
+h2o.hit_ratio_table(deeplearning3,valid=F)[1,2]
+#this is worse - 0.7687861
+
+#COMPARE PERFORMANCE
+rf1 <- h2o.performance(model = randomforest1, newdata = test.t)
+rf2 <- h2o.performance(model = randomforest2, newdata = test.t)
+rf3 <- h2o.performance(model = randomforest3, newdata = test.t.r)
+gb1 <- h2o.performance(model = gradientboosting1, newdata = test.t)
+gb2 <- h2o.performance(model = gradientboosting2, newdata = test.t)
+gb3 <- h2o.performance(model = gradientboosting3, newdata = test.t.r)
+glm1 <- h2o.performance(model = multinomial1, newdata = test.d)
+glm2 <- h2o.performance(model = multinomial2, newdata = test.d)
+glm3 <- h2o.performance(model = multinomial3, newdata = test.d)
+dl1 <- h2o.performance(model = deeplearning1, newdata = test.d)
+dl2 <- h2o.performance(model = deeplearning2, newdata = test.d)
+dl3 <- h2o.performance(model = deeplearning3, newdata = test.d)
+
+h2o.hit_ratio_table(rf1)[1,2]
+h2o.hit_ratio_table(rf2)[1,2]
+h2o.hit_ratio_table(rf3)[1,2]
+h2o.hit_ratio_table(gb1)[1,2]
+h2o.hit_ratio_table(gb2)[1,2]
+h2o.hit_ratio_table(gb3)[1,2]
+h2o.hit_ratio_table(glm1)[1,2]
+h2o.hit_ratio_table(glm2)[1,2]
+h2o.hit_ratio_table(glm3)[1,2]
+h2o.hit_ratio_table(dl1)[1,2]
+h2o.hit_ratio_table(dl2)[1,2]
+h2o.hit_ratio_table(dl3)[1,2]
+
+#end h2o in order to get multiclass roc
+h2o.shutdown(prompt = TRUE)
+
+
+#get the observed response values for test data
+setwd("H:/Northwestern/498/H2O")
+
+#read model results
+rf1out <- read.csv("rf1out.csv")
+rf2out <- read.csv("rf2out.csv")
+rf3out <- read.csv("rf3out.csv")
+gb1out <- read.csv("gb1out.csv")
+gb2out <- read.csv("gb2out.csv")
+gb3out <- read.csv("gb3out.csv")
+mn1out <- read.csv("mn1out.csv")
+mn2out <- read.csv("mn2out.csv")
+mn3out <- read.csv("mn3out.csv")
+dl1out <- read.csv("dl1out.csv")
+dl2out <- read.csv("dl2out.csv")
+dl3out <- read.csv("dl3out.csv")
+
+library(pROC)
+multiclass.roc(rf1out$status_group,rf1out$predict)
+multiclass.roc(rf2out$status_group,rf2out$predict)
+multiclass.roc(rf3out$status_group,rf3out$predict)
+multiclass.roc(gb1out$status_group,gb1out$predict)
+multiclass.roc(gb2out$status_group,gb2out$predict)
+multiclass.roc(gb3out$status_group,gb3out$predict)
+multiclass.roc(mn1out$status_group,mn1out$predict)
+multiclass.roc(mn2out$status_group,mn2out$predict)
+multiclass.roc(mn3out$status_group,mn3out$predict)
+multiclass.roc(dl1out$status_group,dl1out$predict)
+multiclass.roc(dl2out$status_group,dl2out$predict)
+multiclass.roc(dl3out$status_group,dl3out$predict)
+
+
+###Models not supported by H2O
+setwd("H:/Northwestern/498/H2O")
+
+#This is the imputed data - not dummy coded, but standardized numerics
+train<-read.csv("train.csv")
+test<-read.csv("test.csv")
+print(str(train))
+levels(train$status_group)<-c("1","2","3")
+levels(test$status_group)<-c("1","2","3")
+train[,1:5]<-NULL
+test[,1:5]<-NULL
+
+
+#Construct an adabag "bagging" model - reduce subset of variables
+library(adabag)
+fit.bag<-bagging(status_group~., data=train, mfinal=10, control=rpart.control(maxdepth=1))
+barplot(fit.bag$imp[order(fit.bag$imp, decreasing = TRUE)],
+        ylim = c(0, 100), main = "Variables Relative Importance",col = "lightblue")
+table(fit.bag$class, train$status_group, dnn=c("Predicted Class","Observed Class"))
+sum(fit.bag$class==train$status_group)/length(train$status_group)#0.5430605
+fit.pred<-predict.bagging(fit.bag, newdata=test)
+table(fit.pred$class, test$status_group, dnn=c("Predicted Class","Observed Class"))
+sum(fit.pred$class==test$status_group)/length(test$status_group)#  0.6480723
+
+pred<-as.vector(as.numeric(fit.pred$class))
+library(pROC)
+multiclass.roc(test$status_group,pred)
+#Multi-class area under the curve 0.5926
+
+#Construct an adabag "bagging" model - reduce more
+library(adabag)
+fit.bag<-bagging(status_group~quantity+latitude+longitude+population+construction_year
+                 +gps_height+region+waterpoint_type+payment+extraction_type_group
+                 +install_1pct+fund_1pct+district_code_1pct+source, 
+                 data=train, mfinal=50, control=rpart.control(maxdepth=2))
+barplot(fit.bag$imp[order(fit.bag$imp, decreasing = TRUE)],
+        ylim = c(0, 100), main = "Variables Relative Importance",col = "lightblue")
+table(fit.bag$class, train$status_group, dnn=c("Predicted Class","Observed Class"))
+sum(fit.bag$class==train$status_group)/length(train$status_group)#0.5430846
+fit.pred<-predict.bagging(fit.bag, newdata=test)
+table(fit.pred$class, test$status_group, dnn=c("Predicted Class","Observed Class"))
+sum(fit.pred$class==test$status_group)/length(test$status_group)#0.6943712
+
+pred<-as.vector(as.numeric(fit.pred$class))
+library(pROC)
+multiclass.roc(test$status_group,pred)
+#Multi-class area under the curve 0.6474 (50/2)
+
+#This does not appear to be an effective modeling solution
+
+setwd("H:/Northwestern/498/H2O")
+
+#This is the RF imputed data - limited to the fields found to be important in rf
+train<-read.csv("train.d.csv")
+test<-read.csv("test.d.csv")
+print(str(train))
+
+#SUPPORT VECTOR MACHINE
+library(e1071)
+
+svmfit =svm(status_group ~., data=train, kernel ="polynomial", degree =3,cost =1)
+summary (svmfit)
+ypred=predict(svmfit,newdata =train)
+table(train$status_group,ypred)
+(21295+786+11910)/41581 #81.75%
+ypred=as.numeric(predict(svmfit,newdata =test))
+table(test$status_group,ypred)
+(8915+260+4771)/17819 #78.26%
+library(pROC)
+multiclass.roc(test$status_group,ypred)
+#Multi-class area under the curve: 0.7311
+
+#MODEL Tuning
+#radial is better than polynomial
+#cost=1 is a lot better than cost = 0.1
+#cost=10 is better than cost = 1
+#2 degrees is better than higher values
+
+svmfit =svm(status_group ~., data=train, kernel ="radial", degree =2,cost =10)
+summary (svmfit)
+ypred=predict(svmfit,newdata =train)
+table(train$status_group,ypred)
+(21287+1308+12968)/41581 #85.53%
+ypred=as.numeric(predict(svmfit,newdata =test))
+table(test$status_group,ypred)
+(8660+376+5029)/17819 #78.93%
+library(pROC)
+multiclass.roc(test$status_group,ypred)
+#Multi-class area under the curve: 0.7491
+
