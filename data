@@ -1,0 +1,315 @@
+setwd("U:/Chris/R Projects/Testing")
+
+#These are the independent variables;59400 records, 39 variables, and an ID variable
+da<-read.csv("TrainIV.csv")
+dim(da)
+head(da)
+print(str(da))
+
+#Assign appropriate data types to predictors (ignoring those I don't plan to include)
+da$id<-as.factor(da$id)
+da$date_recorded<-as.Date(da$date_recorded)
+da$district_code<-as.factor(da$district_code)
+
+#Extract year from recorded date
+da$year<- as.numeric(format(da$date_recorded,"%Y"))
+
+#set missing values to NA
+da$amount_tsh[da$amount_tsh==0] <-NA
+levels(da$funder)[1:2]<-NA #convert blank or 0 to NA
+da$gps_height[da$gps_height==0] <-NA
+levels(da$installer)[1:3]<-NA #convert blank, -, or 0 to NA
+da$longitude[da$longitude==0] <-NA
+da$latitude[round(da$latitude,digits=3)==0] <-NA #rounding needed to identify missing
+levels(da$subvillage)[1] <-NA
+levels(da$district_code)[1] <-NA
+da$population[da$population==0] <-NA
+levels(da$public_meeting)[1] <-NA
+levels(da$scheme_management)[1] <-NA
+levels(da$scheme_name)[1] <-NA
+levels(da$permit)[1] <-NA
+da$construction_year[da$construction_year==0] <-NA
+
+#Do a few transformatons based on data review
+#1 - Reduce cardinality of Installer, Funder, lga - maybe they are predictive, but too many levels
+
+# Make installer lowercase, take first 3 letters as a sub string
+da$install_3 <- substr(tolower(da$installer),1,3)
+
+# Take the top 15 substrings from above by occurrence frequency
+install_top_15 <- names(summary(as.factor(da$install_3)))[1:15]
+da$install_3[!(da$install_3 %in% install_top_15)] <- "other"
+da$install_3 <- as.factor(da$install_3)
+
+# Make funder lowercase, take first 7 letters as a sub string (distinguish world bank and world vision)
+da$fund_7 <- substr(tolower(da$funder),1,7)
+
+# Take the top 15 funders from above by occurrence frequency
+funder_top_15 <- names(summary(as.factor(da$fund_7)))[1:15]
+da$fund_7[!(da$fund_7 %in% funder_top_15)] <- "other"
+da$fund_7 <- as.factor(da$fund_7)
+
+# Make lga lowercase, take first 7 letters as a sub string 
+da$lga_7 <- substr(tolower(da$lga),1,7)
+
+# Take the top 15 lgas from above by occurrence frequency
+lga_top_15 <- names(summary(as.factor(da$lga_7)))[1:15]
+da$lga_7[!(da$lga_7 %in% lga_top_15)] <- "other"
+da$lga_7 <- as.factor(da$lga_7)
+
+print(str(da))
+
+#Now we drop the variables that are of little or no use based on the data review (imho)
+#recorded by has the same value for each observation
+#payment type is identical to payment
+#quantity is the same as quantity group
+#date recorded - just use year
+#funder - use new 15-level version
+#installer - use new 15-level version
+#wpt_name - this is just a name
+#subvillage - high cardinality
+#region_code - just use region
+#lga - use 15-level version
+#ward - most are "other"
+#scheme_name - this looks like bad data
+
+xvars<-names(da)%in% c("recorded_by", "payment_type","quantity","date_recorded","funder","installer","wpt_name","lga","region_code","ward","scheme_name","subvillage")
+da1<-da[!xvars]
+print(str(da1))
+
+#This is the response variable, 3 levels
+dv<-read.csv("TrainDV.csv")
+dim(dv)
+head(dv)
+print(str(dv))
+
+#Merge IVs and DV by id
+total<-merge(da1,dv,by="id")
+dim(total)
+head(total)
+print(str(total))
+
+#rename and clean up
+da<-total
+rm(dv)
+rm(da1)
+rm(total)
+rm(funder_top_15)
+rm(install_top_15)
+rm(lga_top_15)
+rm(xvars)
+
+
+#Look at Missing Values
+my.missing <- function(x){
+  result <- c(Miss= sum(is.na(x)), Miss_pct=100*sum(is.na(x))/length(x))
+}
+
+result<-sapply(da, my.missing)  
+result
+# we are missing a large portion of amount_tsh, gps_height, population, and construction year - watch these
+
+#add missing indicators
+da$amount_tsh.m<-ifelse(is.na(da$amount_tsh), 1, 0)
+da$gps_height.m<-ifelse(is.na(da$gps_height), 1, 0)
+da$longitude.m<-ifelse(is.na(da$longitude), 1, 0)
+da$latitude.m<-ifelse(is.na(da$latitude), 1, 0)
+da$district_code.m<-ifelse(is.na(da$district_code), 1, 0)
+da$population.m<-ifelse(is.na(da$population), 1, 0)
+da$public_meeting.m<-ifelse(is.na(da$public_meeting), 1, 0)
+da$scheme_management.m<-ifelse(is.na(da$scheme_management), 1, 0)
+da$permit.m<-ifelse(is.na(da$permit), 1, 0)
+da$construction_year.m<-ifelse(is.na(da$construction_year), 1, 0)
+
+print(str(da))
+
+#Now we impute missing values using the IVs only - not id, status group, or missing indicators
+
+library(doParallel)
+registerDoParallel(cores = 4)
+
+library(missForest)
+
+da.imputed<-missForest(da[,2:32], maxiter = 5, ntree = 50, variablewise=TRUE,mtry = 5, parallelize = "forests")
+#use variablewise=True to see if there are imputations that are indicative of a variable that should be excluded
+da.imputed$OOBerror
+
+head(da.imputed$ximp)
+head(da)
+
+#create a df for the fields not used to generate imputed values
+da.excl<-da[,c("id","status_group","amount_tsh.m","gps_height.m","longitude.m","latitude.m",
+               "district_code.m","population.m","public_meeting.m","scheme_management.m","permit.m",
+               "construction_year.m")]
+
+#combine all fields - now we have all records, including id, status group, missing indicators, imputed values
+all<-cbind(da.excl,da.imputed$ximp)
+
+head(all)
+
+#save full transformed data file to use in future (takes a lot of time to recreate)
+write.csv(all, file="all.csv")
+
+#clean up
+rm(da)
+rm(da.excl)
+rm(result)
+rm(da.imputed)
+
+#Now that data are transformed, we split the data into training and test data
+
+#Split the data 70/30, set seed to generate reproducible results, retain DV proportions
+library(caret)
+set.seed(123) #to generate reproducible results
+trainIndex<-createDataPartition(all$status_group, p=.7, list=FALSE, times=1)
+train<-all[trainIndex,]
+test<-all[-trainIndex,]
+
+write.csv(train, file="train.csv")
+write.csv(test, file="test.csv")
+
+rm(all)
+
+#I logged off here - needed to grab the training data I saved
+#Use training data to perform EDA
+
+da<-read.csv("train.csv")
+dim(da)
+head(da)
+print(str(da))
+da<-da[,3:44] #drop the row id and "id"
+
+#Define variable types
+da$amount_tsh.m<-as.factor(da$amount_tsh.m)
+da$gps_height.m<-as.factor(da$gps_height.m)
+da$longitude.m<-as.factor(da$longitude.m)
+da$latitude.m<-as.factor(da$latitude.m)
+da$district_code.m<-as.factor(da$district_code.m)
+da$population.m<-as.factor(da$population.m)
+da$public_meeting.m<-as.factor(da$public_meeting.m)
+da$scheme_management.m<-as.factor(da$scheme_management.m)
+da$permit.m<-as.factor(da$permit.m)
+da$construction_year.m<-as.factor(da$construction_year.m)
+da$district_code<-as.factor(da$district_code)
+
+#read in the test data too
+test<-read.csv("test.csv")
+dim(test)
+head(test)
+print(str(test))
+test<-test[,3:44] #drop the row id and "id"
+
+
+#Define variable types
+test$amount_tsh.m<-as.factor(test$amount_tsh.m)
+test$gps_height.m<-as.factor(test$gps_height.m)
+test$longitude.m<-as.factor(test$longitude.m)
+test$latitude.m<-as.factor(test$latitude.m)
+test$district_code.m<-as.factor(test$district_code.m)
+test$population.m<-as.factor(test$population.m)
+test$public_meeting.m<-as.factor(test$public_meeting.m)
+test$scheme_management.m<-as.factor(test$scheme_management.m)
+test$permit.m<-as.factor(test$permit.m)
+test$construction_year.m<-as.factor(test$construction_year.m)
+test$district_code<-as.factor(test$district_code)
+
+print(str(test))
+print(str(da))
+
+
+#Create plots of IVs and Status Group
+
+library(ggplot2)
+str(da)
+
+# Create bar plot for quantity
+qplot(quantity_group, data=da, geom="bar", fill=status_group) + 
+  theme(legend.position = "bottom")
+
+# Create bar plot for quality_group
+qplot(quality_group, data=da, geom="bar", fill=status_group) + 
+  theme(legend.position = "bottom")
+
+# Create bar plot for waterpoint_type
+qplot(waterpoint_type, data=da, geom="bar", fill=status_group) + 
+  theme(legend.position = "bottom") + 
+  theme(axis.text.x=element_text(angle = -20, hjust = 0))
+
+# Create bar plot for payment
+qplot(payment, data=da, geom="bar", fill=status_group) + 
+  theme(legend.position = "bottom") + 
+  theme(axis.text.x=element_text(angle = -20, hjust = 0))
+
+# Create bar plot for basin
+qplot(basin, data=da, geom="bar", fill=status_group) + 
+  theme(legend.position = "bottom") + 
+  theme(axis.text.x=element_text(angle = -20, hjust = 0))
+
+# Create bar plot for Extraction Type Class
+qplot(extraction_type_class, data=da, geom="bar", fill=status_group) + 
+  theme(legend.position = "bottom") + 
+  theme(axis.text.x=element_text(angle = -20, hjust = 0))
+
+# Create bar plot for Source Type
+qplot(source_type, data=da, geom="bar", fill=status_group) + 
+  theme(legend.position = "bottom") + 
+  theme(axis.text.x=element_text(angle = -20, hjust = 0))
+
+# Create a histogram for `construction_year` grouped by `status_group`
+ggplot(da, aes(x = construction_year)) + 
+  geom_histogram(bins = 20) + 
+  facet_grid( ~ status_group)
+
+
+
+#Exploratory Models
+train<-da
+rm(da)
+#Construct a naive random forest
+library(doParallel)
+library(randomForest)
+library(kernlab)
+
+cores<-detectCores()
+c1<-makePSOCKcluster(cores)
+registerDoParallel(c1)
+
+
+
+
+fit.rf<-foreach(ntree=rep(50, cores), .combine = combine, .packages="randomForest") %dopar% {
+  randomForest(status_group ~ . ,data=train, mtry=6,ntree=ntree, importance=TRUE)
+}
+  
+fit.rf
+
+stopCluster(c1)
+
+varImp<-importance(fit.rf)
+varImp
+
+varImpPlot(fit.rf,type=1)
+plot<-varImpPlot(fit.rf)
+plot
+
+
+#Test Accuracy
+model.rf.train <- predict(fit.rf, train, type="class")
+table(model.rf.train,train$status_group)
+#train accuracy = 95.1%
+(22284+2276+14974)/41581
+
+
+#need to set levels in test = to levels in train - otherwise model won't predict test
+levels(test$district_code) <- levels(train$district_code)
+levels(test$scheme_management) <- levels(train$scheme_management)
+levels(test$extraction_type) <- levels(train$extraction_type)
+
+model.rf1.test <- predict(fit.rf, test, type="class")
+table(model.rf1.test,test$status_group)
+#test accuracy - 80.9%
+(8814+366+5241)/17819
+
+
+
+
