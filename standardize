@@ -1,0 +1,120 @@
+#The purpose of this script is to standardize the train and test data prior to modeling
+setwd("U:/Suzy/R Projects/Testing/imputations")
+
+#Start with All.csv, the complete fill created using missForest imputation
+
+all<-read.csv("all.csv")
+all<-all[,2:44] #drop the row id
+
+#Define variable types
+all$amount_tsh.m<-as.factor(all$amount_tsh.m)
+all$gps_height.m<-as.factor(all$gps_height.m)
+all$longitude.m<-as.factor(all$longitude.m)
+all$latitude.m<-as.factor(all$latitude.m)
+all$district_code.m<-as.factor(all$district_code.m)
+all$population.m<-as.factor(all$population.m)
+all$public_meeting.m<-as.factor(all$public_meeting.m)
+all$scheme_management.m<-as.factor(all$scheme_management.m)
+all$permit.m<-as.factor(all$permit.m)
+all$construction_year.m<-as.factor(all$construction_year.m)
+all$district_code<-as.factor(all$district_code)
+
+head(all)
+
+#split the data - train and test
+library(caret)
+set.seed(123) #to generate reproducible results
+trainIndex<-createDataPartition(all$status_group, p=.7, list=FALSE, times=1)
+train<-all[trainIndex,]
+test<-all[-trainIndex,]
+rm(all)
+rm(trainIndex)
+
+#transform the numeric data - use the train data to develop transformations
+my.num<-c("amount_tsh","gps_height","longitude","latitude", "num_private",
+          "construction_year","year")
+train.num<-train[my.num]
+test.num<-test[my.num]
+
+preProcValues <- preProcess(train.num, method = c("center", "scale"))
+
+ztrain <- predict(preProcValues, train.num)
+ztest <- predict(preProcValues, test.num) #note that these are transformed and normalized using mean and sd from the train data
+head(ztrain)
+summary(ztrain)
+summary(ztest)
+#you can see that the mean for the train columns will be 0, but not for the test data - this is intended
+rm(train.num)
+rm(test.num)
+
+#now transform the categorical data - retain only categorical data
+my.excl<-names(train) %in% c("id","status_group","amount_tsh","gps_height",
+                           "longitude","latitude", "num_private",
+                           "construction_year","year")
+train.cat<-train[!my.excl]
+
+my.excl<-names(test) %in% c("id","status_group","amount_tsh","gps_height",
+                             "longitude","latitude", "num_private",
+                             "construction_year","year")
+test.cat<-test[!my.excl]
+
+#Use dummy package to convert categorical data into dummy variables
+library(dummy)
+train.dum<-dummy(train.cat, p="all", int=TRUE)
+test.dum<-dummy(test.cat, p="all", int=TRUE)
+head(train.dum)
+
+#now we have 247 fields. but some are duplicates - remove those - retain 216
+
+my.dup<-names(train.dum)%in%c("extraction_type_group_afridev","extraction_type_group_gravity","extraction_type_group_india.mark.ii","extraction_type_group_india.mark.iii","extraction_type_group_mono",
+          "extraction_type_group_nira.tanira","extraction_type_group_other","extraction_type_group_rope.pump",
+          "extraction_type_group_swn.80","extraction_type_group_wind.powered","extraction_type_class_gravity",
+          "extraction_type_class_other","extraction_type_class_rope.pump","extraction_type_class_submersible",
+          "extraction_type_class_wind.powered","management_group_other","management_group_parastatal",
+          "quality_group_colored","quality_group_good","quality_group_milky","quality_group_unknown",
+          "source_type_dam","source_type_rainwater.harvesting","source_type_shallow.well","source_type_spring",
+          "source_class_unknown","waterpoint_type_group_cattle.trough","waterpoint_type_group_dam","waterpoint_type_group_hand.pump",
+          "waterpoint_type_group_improved.spring","waterpoint_type_group_other")
+
+train.dum2<-train.dum[!my.dup]
+rm(train.dum)
+
+my.dup2<-names(test.dum)%in%c("extraction_type_group_afridev","extraction_type_group_gravity","extraction_type_group_india.mark.ii","extraction_type_group_india.mark.iii","extraction_type_group_mono",
+                              "extraction_type_group_nira.tanira","extraction_type_group_other","extraction_type_group_rope.pump",
+                              "extraction_type_group_swn.80","extraction_type_group_wind.powered","extraction_type_class_gravity",
+                              "extraction_type_class_other","extraction_type_class_rope.pump","extraction_type_class_submersible",
+                              "extraction_type_class_wind.powered","management_group_other","management_group_parastatal",
+                              "quality_group_colored","quality_group_good","quality_group_milky","quality_group_unknown",
+                              "source_type_dam","source_type_rainwater.harvesting","source_type_shallow.well","source_type_spring",
+                              "source_class_unknown","waterpoint_type_group_cattle.trough","waterpoint_type_group_dam","waterpoint_type_group_hand.pump",
+                              "waterpoint_type_group_improved.spring","waterpoint_type_group_other")
+
+test.dum2<-test.dum[!my.dup2]
+rm(test.dum)
+
+#now put the data back together
+library(dplyr)
+train.id<-subset(train, select = c(1))
+train.dv<-subset(train, select = c(2))
+train.s<-cbind(train.id,ztrain,train.dum2,train.dv)
+head(train.s)
+rm(train.cat)
+rm(train.dum2)
+rm(train.dv)
+rm(train.id)
+rm(train)
+rm(ztrain)
+
+test.id<-subset(test, select = c(1))
+test.dv<-subset(test, select = c(2))
+test.s<-cbind(test.id,ztest,test.dum2,test.dv)
+head(test.s)
+rm(test.cat)
+rm(test.dum2)
+rm(test.dv)
+rm(test.id)
+rm(test)
+rm(ztest)
+
+write.csv(train.s, file="train.s.csv")
+write.csv(test.s, file="test.s.csv")
